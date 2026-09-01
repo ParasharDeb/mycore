@@ -7,10 +7,36 @@ import bcrypt from "bcrypt"
 import jwt from "jsonwebtoken"
 import { JWT_SECRET } from "./config"
 import { authMiddleware, AuthenticatedRequest } from "./middleware"
+import { stripe } from "./stripe"
 
 const app=express()
 app.use(express.json())
 app.use(cors())
+
+app.get("/health", async (_req, res) => {
+    const startedAt = Date.now()
+    let database: "up" | "down" = "up"
+
+    try {
+        await prisma.$queryRaw`SELECT 1`
+    } catch (error) {
+        database = "down"
+        console.error("Health check: database unreachable", error)
+    }
+
+    const body = {
+        status: database === "up" ? "ok" : "degraded",
+        service: "backend",
+        uptime: Math.floor(process.uptime()),
+        timestamp: new Date().toISOString(),
+        latencyMs: Date.now() - startedAt,
+        checks: {
+            database
+        }
+    }
+
+    return res.status(database === "up" ? 200 : 503).json(body)
+})
 
 app.post("/signup",async(req,res)=>{
     const {success,data}=Signupdetails.safeParse(req.body);
@@ -293,6 +319,83 @@ app.get("/interview/:id", authMiddleware, async (req: AuthenticatedRequest, res)
 
     
 })
+const PLANS = {
+  starter: {
+    credits: 3,
+    priceId: process.env.STRIPE_STARTER_PRICE_ID!,
+  },
+  pro: {
+    credits: 10,
+    priceId: process.env.STRIPE_PRO_PRICE_ID!,
+  },
+  max: {
+    credits: 20,
+    priceId: process.env.STRIPE_MAX_PRICE_ID!,
+  },
+} as const;
+
+app.post(
+  "/stripe/create-checkout-session",
+  authMiddleware,
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const { planId } = req.body;
+
+      const plan = PLANS[planId as keyof typeof PLANS];
+
+      if (!plan) {
+        return res.status(400).json({
+          message: "Invalid plan",
+        });
+      }
+
+      const user = await prisma.User.findUnique({
+        where: {
+          id: req.userId!,
+        },
+      });
+
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found",
+        });
+      }
+
+      const session = await stripe.checkout.sessions.create({
+        mode: "payment",
+
+        line_items: [
+          {
+            price: plan.priceId,
+            quantity: 1,
+          },
+        ],
+
+        metadata: {
+          userId: user.id,
+          planId: planId,
+          credits: String(plan.credits),
+        },
+
+        success_url:
+          `${process.env.FRONTEND_URL}/payment/success`,
+
+        cancel_url:
+          `${process.env.FRONTEND_URL}/payment`,
+      });
+
+      return res.json({
+        url: session.url,
+      });
+    } catch (error) {
+      console.error("Stripe checkout error:", error);
+
+      return res.status(500).json({
+        message: "Unable to create checkout session",
+      });
+    }
+  }
+);
 const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, () => {

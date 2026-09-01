@@ -1,4 +1,4 @@
-import "dotenv/config"
+import "dotenv/config" 
 import { client } from "@repo/redis";
 import { GoogleGenAI } from "@google/genai";
 import {prisma} from "@repo/db"      

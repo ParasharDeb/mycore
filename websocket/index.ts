@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import http from "http";
 import { WebSocketServer } from "ws";
 import { GoogleGenAI, Modality } from "@google/genai";
 import { client } from '@repo/redis';
@@ -28,8 +29,54 @@ const GOODBYE_PROMPT =
 const GOODBYE_PLAYING_TIMEOUT_MS = 30_000;
 const GOODBYE_PENDING_TIMEOUT_MS = 90_000;
 
+const PORT = Number(process.env.PORT) || 5050;
+
+const healthServer = http.createServer(async (req, res) => {
+  const path = (req.url || "").split("?")[0];
+
+  if (req.method !== "GET" || path !== "/health") {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ message: "Not found" }));
+    return;
+  }
+
+  const startedAt = Date.now();
+  let database: "up" | "down" = "up";
+  let redis: "up" | "down" = "up";
+
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+  } catch (error) {
+    database = "down";
+    console.error("Health check: database unreachable", error);
+  }
+
+  try {
+    await client.ping();
+  } catch (error) {
+    redis = "down";
+    console.error("Health check: redis unreachable", error);
+  }
+
+  const healthy = database === "up" && redis === "up";
+
+  res.writeHead(healthy ? 200 : 503, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({
+    status: healthy ? "ok" : "degraded",
+    service: "websocket",
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+    latencyMs: Date.now() - startedAt,
+    activeConnections: wss.clients.size,
+    checks: {
+      database,
+      redis
+    }
+  }));
+});
+
 const wss = new WebSocketServer({
-  port: 5050,
+  server: healthServer,
 });
 
 const ai = new GoogleGenAI({
@@ -366,4 +413,8 @@ wss.on("connection", async (socket, req) => {
       session.close();
     }
   });
+});
+
+healthServer.listen(PORT, () => {
+  console.log(`Websocket listening on ${PORT}`);
 });
