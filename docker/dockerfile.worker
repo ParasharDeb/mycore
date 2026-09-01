@@ -21,7 +21,11 @@ COPY pg-db ./pg-db
 COPY redis-db ./redis-db
 
 # Generate Prisma Client
-RUN bunx prisma generate --schema=pg-db/prisma/schema.prisma
+WORKDIR /app/pg-db
+# prisma's bin is linked into pg-db/node_modules/.bin (isolated install), and
+# prisma.config.ts resolves DATABASE_URL at load time - the dummy value is
+# only to satisfy that, generate never connects to the database.
+RUN DATABASE_URL="postgresql://user:pass@localhost:5432/db" bunx --bun prisma generate
 
 # Run the worker
 WORKDIR /app/worker
